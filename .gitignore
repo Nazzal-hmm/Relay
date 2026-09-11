@@ -1,0 +1,14 @@
+# Firebase
+.firebase/
+.firebaserc
+*-debug.log
+
+# OS / editor
+.DS_Store
+.omc/
+
+# Node (only if you ever add tooling)
+node_modules/
+
+# NOTE: index.html holds the Gemini key at deploy time.
+# Do NOT commit index.html to a PUBLIC repo with a live key in it.
