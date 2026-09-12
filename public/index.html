@@ -1,0 +1,993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#05070A" />
+<title>Two-way AR Translation — Relay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ===== Design tokens (SPEC §2 — WCAG AAA) ===== */
+  :root{
+    --void:#05070A;          /* app background outside the feed */
+    --surface:#0B1116;       /* phone chrome / cards / bezel */
+    --feed-base:#10171D;     /* camera-feed dark backdrop */
+    --glass:rgba(5,7,10,0.9);/* AR caption containers (>=85% opacity) */
+    --green:#2EE6A6;         /* SPEAKING / audio output  (~12.5:1 AAA) */
+    --blue:#56C8FF;          /* LISTENING / speech capture (~10.7:1 AAA) */
+    --ink:#F4F7F9;           /* primary text (~15:1 AAA) */
+    --ink-muted:#B9C2C8;     /* the ONLY muted gray for text (~11:1 AAA) */
+    /* --alert-red:#FF6F66;  reserved for out-of-frame state — NOT in this build (SPEC §2/§3) */
+    --ui:'Manrope',system-ui,sans-serif;
+    --cap:'IBM Plex Sans',system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--void); color:var(--ink);
+    font-family:var(--ui);
+    -webkit-font-smoothing:antialiased;
+    display:flex; flex-direction:column; align-items:center;
+    padding:28px 16px 56px; min-height:100vh; min-height:100dvh;
+  }
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+  /* ===== Header ===== */
+  .head{text-align:center;margin-bottom:20px;max-width:520px}
+  .head h1{font-weight:800;font-size:20px;letter-spacing:.2px;margin:0}
+  .head p{color:var(--ink-muted);font-family:var(--cap);font-size:13px;margin:6px 0 0}
+
+  /* ===== State stepper (demo control) ===== */
+  .stepper{display:flex;gap:6px;background:var(--surface);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:5px;margin-bottom:16px}
+  .stepper button{display:flex;align-items:center;gap:7px;padding:8px 12px;min-height:48px;border-radius:10px;border:none;background:transparent;cursor:pointer;color:var(--ink-muted);font-family:var(--ui)}
+  .stepper button .num{width:18px;height:18px;border-radius:999px;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);color:var(--ink-muted)}
+  .stepper button .lbl{font-size:12px;font-weight:700}
+  .stepper button[aria-current="true"]{background:rgba(255,255,255,.06)}
+  .stepper button[aria-current="true"] .num{background:var(--ink);color:#04140F}
+  .stepper button[aria-current="true"] .lbl{color:var(--ink)}
+
+  /* ===== Persistent legend (SPEC §2 — color is never alone) ===== */
+  .legend{width:340px;max-width:calc(100vw - 32px);display:flex;gap:10px;margin-bottom:16px;padding:10px 12px;border-radius:12px;background:var(--surface);border:1px solid rgba(255,255,255,.06)}
+  .legend .cell{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px}
+  .legend .ic{width:26px;height:26px;border-radius:999px;display:flex;align-items:center;justify-content:center}
+  .legend .cap{font-family:var(--cap);font-size:10.5px;color:var(--ink);text-align:center;line-height:1.25}
+
+  /* ===== Phone frame ===== */
+  .phone{width:340px;max-width:calc(100vw - 24px);height:700px;max-height:calc(100dvh - 96px);
+    border-radius:46px;background:var(--surface);border:1px solid rgba(255,255,255,.08);
+    padding:10px;box-shadow:0 40px 80px rgba(0,0,0,.55)}
+  .screen{position:relative;width:100%;height:100%;border-radius:36px;overflow:hidden;background:var(--feed-base);outline:none}
+
+  /* Camera feed */
+  #video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;background:radial-gradient(120% 90% at 50% 15%,#182229 0%,#10171D 55%,#0A0F13 100%)}
+  #skeleton{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .mirrored{transform:scaleX(-1)}
+  .vignette{position:absolute;inset:0;background:radial-gradient(60% 40% at 50% 100%,rgba(0,0,0,.55),transparent 70%);pointer-events:none}
+
+  /* Framing brackets — kept clear of the bottom caption/deck (SPEC §3) */
+  .brackets{position:absolute;inset:0;pointer-events:none}
+  .brackets i{position:absolute;width:26px;height:26px;border:2px solid rgba(46,230,166,.85)}
+  .brackets .tl{top:12%;left:24px;border-right:none;border-bottom:none}
+  .brackets .tr{top:12%;right:24px;border-left:none;border-bottom:none}
+  .brackets .bl{bottom:32%;left:24px;border-right:none;border-top:none}
+  .brackets .br{bottom:32%;right:24px;border-left:none;border-top:none}
+
+  /* Regions (flex column so it adapts to any height, unlike the fixed-px mockup) */
+  .topbar{position:absolute;top:0;left:0;right:0;padding:18px 18px 14px;background:linear-gradient(180deg,rgba(5,7,10,.85),transparent);z-index:3}
+  .topbar .row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .topbar .status{display:flex;align-items:center;gap:8px}
+  .topbar .title{font-family:var(--ui);font-weight:800;font-size:13px;letter-spacing:.6px;color:var(--ink)}
+  .topbar .sub{margin-top:4px;font-family:var(--cap);font-size:12px;color:var(--ink-muted);padding-left:16px}
+
+  .dot{width:8px;height:8px;border-radius:999px;display:inline-block}
+  .center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:0 24px;text-align:center}
+
+  .capwrap{position:absolute;left:20px;right:20px;bottom:120px;z-index:2}
+  .caphint{font-family:var(--cap);font-size:11px;color:var(--ink-muted);margin-bottom:6px;padding-left:2px}
+  .glass{background:var(--glass);backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px 16px;font-family:var(--cap);font-weight:500;font-size:17px;line-height:1.35;color:var(--ink)}
+
+  .deck{position:absolute;left:0;right:0;bottom:0;padding:14px 18px 20px;background:linear-gradient(0deg,rgba(5,7,10,.92),transparent);z-index:3}
+  .btn{width:100%;min-height:48px;border-radius:14px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:var(--ink);
+    font-family:var(--ui);font-weight:800;font-size:14px;letter-spacing:.4px;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer}
+  .btn.green{background:var(--green);color:#04140F;border:none}
+  .btn.blue{background:var(--blue);color:#04140F;border:none}
+  .btn.glow{box-shadow:0 0 0 3px rgba(46,230,166,.25),0 0 22px rgba(46,230,166,.55);animation:glow 1.2s ease-in-out infinite}
+  .deck .loopnote{display:flex;align-items:center;justify-content:center;gap:5px;margin-top:8px}
+  .deck .loopnote span{font-family:var(--cap);font-size:10.5px;color:var(--ink-muted)}
+
+  /* Waveform */
+  .wave{display:flex;align-items:center;gap:3px;height:24px}
+  .wave i{width:3px;border-radius:2px;background:currentColor;height:8px;opacity:.35}
+  .wave.active i{opacity:1}
+  .wave.active i{animation:wave 900ms ease-in-out infinite}
+
+  /* Chips / tags */
+  .tag{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;font-family:var(--ui);font-size:11px;font-weight:700}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;font-family:var(--cap);font-size:11px}
+  .mic-orb{width:88px;height:88px;border-radius:999px;background:rgba(86,200,255,.12);border:1px solid rgba(86,200,255,.4);display:flex;align-items:center;justify-content:center;animation:breathe 1.8s ease-in-out infinite}
+
+  /* Sim toggle (demo aid, per mockup) */
+  .simtoggle{position:absolute;top:14px;right:14px;z-index:5;display:flex;align-items:center;gap:6px;padding:8px 12px;min-height:44px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(5,7,10,.7);cursor:pointer;color:var(--ink-muted);font-family:var(--cap);font-size:10px}
+
+  /* Loading / error overlay */
+  .cover{position:absolute;inset:0;z-index:10;display:none;align-items:center;justify-content:center;text-align:center;padding:24px;background:rgba(5,7,10,.9)}
+  .cover.show{display:flex}
+  .cover .inner{max-width:280px}
+  .cover h3{margin:0 0 8px;font-size:16px}
+  .cover p{margin:0;color:var(--ink-muted);font-family:var(--cap);font-size:13px}
+  .spinner{width:34px;height:34px;border:3px solid rgba(255,255,255,.15);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 14px}
+
+  /* A11y notes */
+  .notes{margin-top:18px;width:340px;max-width:calc(100vw - 32px);display:flex;flex-direction:column;gap:8px}
+  .notes .note{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:var(--surface);border:1px solid rgba(255,255,255,.06)}
+  .notes .note span{font-family:var(--cap);font-size:12.5px;color:var(--ink-muted)}
+  .notes .note svg{color:var(--ink-muted);flex:none}
+
+  /* Demo & training panel */
+  details.panel{margin-top:16px;width:340px;max-width:calc(100vw - 32px);background:var(--surface);border:1px solid rgba(255,255,255,.06);border-radius:12px;padding:4px 14px}
+  details.panel summary{cursor:pointer;padding:10px 0;font-weight:700;font-size:13px;color:var(--ink);list-style:none}
+  details.panel summary::-webkit-details-marker{display:none}
+  details.panel summary::before{content:"⚙ ";opacity:.7}
+  .panel .field{margin:10px 0}
+  .panel label{display:block;font-family:var(--cap);font-size:12px;color:var(--ink-muted);margin-bottom:6px}
+  .panel input[type=text]{width:100%;background:var(--void);border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit}
+  .panel input[type=text]:focus{outline:none;border-color:var(--blue)}
+  .panel input[type=range]{width:100%;accent-color:var(--blue)}
+  .panel .row{display:flex;gap:8px;flex-wrap:wrap}
+  .panel .mini{flex:1;min-height:44px;border-radius:10px;border:1px solid rgba(255,255,255,.14);background:var(--void);color:var(--ink);font:inherit;font-weight:700;cursor:pointer}
+  .panel .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .panel .chip{font-family:var(--cap);font-size:12px;padding:6px 10px;border-radius:999px;background:var(--void);border:1px dashed rgba(255,255,255,.18);color:var(--ink-muted);cursor:pointer}
+  .panel .signlist{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+  .panel .signlist .item{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--void);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:8px 10px;font-family:var(--cap);font-size:13px}
+  .panel .signlist .item button{padding:4px 9px;min-height:36px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:transparent;color:var(--ink-muted);cursor:pointer;font-size:12px}
+  .panel .status-line{font-family:var(--cap);font-size:12px;color:var(--ink-muted);margin:8px 0 12px}
+  .panel .status-line b{color:var(--ink)}
+  .empty{font-family:var(--cap);font-size:12px;color:var(--ink-muted);font-style:italic}
+
+  /* Global interaction (SPEC §4: visible focus ring on every control) */
+  button,summary,input,[tabindex]{transition:transform 120ms ease}
+  button:active{transform:scale(.97)}
+  *:focus-visible{outline:3px solid var(--ink);outline-offset:2px;border-radius:8px}
+
+  @keyframes wave{0%,100%{height:6px}50%{height:22px}}
+  @keyframes breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+  @keyframes glow{0%,100%{box-shadow:0 0 0 3px rgba(46,230,166,.25),0 0 14px rgba(46,230,166,.4)}50%{box-shadow:0 0 0 3px rgba(46,230,166,.4),0 0 26px rgba(46,230,166,.75)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){*{animation:none !important}}
+</style>
+</head>
+<body>
+  <!-- Screen-reader live regions (SPEC §4) -->
+  <div id="srAssertive" class="sr-only" aria-live="assertive" role="alert"></div>
+  <div id="srPolite" class="sr-only" aria-live="polite" role="status"></div>
+
+  <div class="head">
+    <h1>Two-way AR translation — turn-taking flow</h1>
+    <p>Sign → speech and speech → captions, one turn at a time. Step through the states below, or let the flow drive itself. Use the pill on <b>Signing</b> to simulate finishing a turn.</p>
+  </div>
+
+  <!-- State stepper (demo control; the flow also auto-advances) -->
+  <div class="stepper" role="tablist" aria-label="Translation states">
+    <button data-state="1" role="tab" aria-current="true"><span class="num">1</span><span class="lbl">Setup</span></button>
+    <button data-state="2" role="tab" aria-current="false"><span class="num">2</span><span class="lbl">Signing</span></button>
+    <button data-state="3" role="tab" aria-current="false"><span class="num">3</span><span class="lbl">Hand-off</span></button>
+    <button data-state="4" role="tab" aria-current="false"><span class="num">4</span><span class="lbl">Listening</span></button>
+  </div>
+
+  <!-- Persistent legend: color + icon + text, always visible (SPEC §2/§4) -->
+  <div class="legend" aria-label="Status legend">
+    <div class="cell">
+      <div class="ic" style="background:#2EE6A622;border:1.5px solid var(--green)" data-icon="volume2" data-color="var(--green)" data-size="13"></div>
+      <div class="cap">App is speaking</div>
+    </div>
+    <div class="cell">
+      <div class="ic" style="background:#56C8FF22;border:1.5px solid var(--blue)" data-icon="mic" data-color="var(--blue)" data-size="13"></div>
+      <div class="cap">App is listening</div>
+    </div>
+  </div>
+
+  <!-- Phone -->
+  <div class="phone">
+    <div class="screen" id="screen" tabindex="-1" aria-label="AR translation view">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="skeleton"></canvas>
+      <div class="vignette"></div>
+      <div class="brackets" id="brackets"><i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i></div>
+
+      <!-- Sim toggle (only meaningful on Signing) -->
+      <button class="simtoggle" id="simToggle" hidden><span id="simLabel">Simulate: finish signing</span></button>
+
+      <!-- Top bar -->
+      <div class="topbar">
+        <div class="row">
+          <div class="status">
+            <span class="dot" id="stateDot"></span>
+            <span class="title" id="stateTitle">TRANSLATION ACTIVE</span>
+          </div>
+          <div id="topWave" class="wave" hidden></div>
+        </div>
+        <div class="sub" id="stateSub">Camera armed · auto-detect on</div>
+      </div>
+
+      <!-- Center content (mic orb etc.) -->
+      <div class="center" id="center" hidden></div>
+
+      <!-- Caption region -->
+      <div class="capwrap" id="capwrap">
+        <div class="caphint" id="capHint" hidden>Recognizing sign…</div>
+        <div class="glass" id="caption">Point the camera at your signing to begin.</div>
+        <div id="capMeta"></div>
+      </div>
+
+      <!-- Bottom deck -->
+      <div class="deck" id="deck"></div>
+
+      <!-- Loading / error cover -->
+      <div class="cover show" id="cover">
+        <div class="inner">
+          <div class="spinner" id="spinner"></div>
+          <h3 id="coverTitle">Starting camera & hand model…</h3>
+          <p id="coverBody">Allow camera access. The on-device model downloads once (a few seconds).</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A11y notes for the current state -->
+  <div class="notes" id="notes" aria-label="Accessibility behavior for this state"></div>
+
+  <!-- Demo & training -->
+  <details class="panel">
+    <summary>Demo &amp; training</summary>
+    <p class="status-line">Model: <b id="modelState">loading…</b> · Gemini: <b id="geminiState">—</b> · Signs trained: <b id="signCount">0</b></p>
+
+    <div class="field">
+      <label>Mode</label>
+      <div class="row">
+        <button class="mini" id="modeInstantBtn">⚡ Instant phrases</button>
+        <button class="mini" id="modeComposeBtn">🧠 Compose (Gemini)</button>
+      </div>
+      <p class="status-line" style="margin:6px 0 0">Instant: one recognized sign instantly speaks its full sentence (fast, demo-proof). Compose: signs accumulate and Gemini writes one sentence at the pause.</p>
+    </div>
+
+    <div class="field" id="phraseField">
+      <label>Keyword → spoken sentence (Instant mode)</label>
+      <div class="signlist" id="phraseList"></div>
+      <div class="row" style="margin-top:10px">
+        <input type="text" id="phraseKey" placeholder="keyword (e.g. card)" autocomplete="off" style="flex:1" />
+      </div>
+      <div class="row" style="margin-top:6px">
+        <input type="text" id="phraseText" placeholder="sentence to speak" autocomplete="off" style="flex:2" />
+        <button class="mini" id="phraseSaveBtn" style="flex:0 0 auto">Set</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="wordInput">Teach a sign — hold the shape, type a word, tap Record ~4–5×</label>
+      <input type="text" id="wordInput" placeholder="e.g. hello" autocomplete="off" />
+      <div class="chips" id="seedChips"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="mini" id="recordBtn">● Record sample</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Trained signs</label>
+      <div class="signlist" id="signList"><span class="empty">No signs trained yet — signs carry over from CommuniLens if you trained there.</span></div>
+      <div class="row" style="margin-top:10px">
+        <button class="mini" id="clearAllBtn">Clear all signs</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Move signs between devices (train on laptop → use on phone)</label>
+      <div class="row">
+        <button class="mini" id="exportBtn">⬆ Export signs</button>
+        <button class="mini" id="importBtn">⬇ Import signs</button>
+        <input type="file" id="importFile" accept="application/json,.json" hidden />
+      </div>
+      <textarea id="transferBox" placeholder="Export puts a shareable code here (also downloads a file + copies to clipboard). To import: paste a code here and tap Import, or use a file." rows="3"
+        style="width:100%;margin-top:8px;background:var(--void);border:1px solid rgba(255,255,255,.12);color:var(--ink);border-radius:10px;padding:10px 12px;font-family:var(--cap);font-size:12px;resize:vertical"></textarea>
+      <p class="status-line" id="transferMsg" style="margin:6px 0 0"></p>
+    </div>
+
+    <div class="field">
+      <label for="threshold">Match sensitivity · <span id="threshVal">0.55</span> (lower = stricter)</label>
+      <input type="range" id="threshold" min="0.15" max="1.2" step="0.01" value="0.55" />
+    </div>
+
+    <div class="field">
+      <div class="row">
+        <button class="mini" id="switchCamBtn">🔄 Switch camera</button>
+        <button class="mini" id="replaySimBtn">▶ Run full turn (auto)</button>
+      </div>
+    </div>
+  </details>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker }
+  from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs";
+
+/* ============================================================
+   CONFIG
+   GEMINI_API_KEY: the only place the key belongs. Injected at
+   deploy time / kept blank in the public repo (SPEC §10 of the
+   original brief). Model bumped to a current Flash release.
+   ============================================================ */
+const GEMINI_API_KEY = "";
+const GEMINI_MODEL    = "gemini-3.6-flash";
+const SIGNS           = ["hello", "coffee", "milk", "thank you", "card", "yes", "no"];
+const MATCH_THRESHOLD = 0.55;
+const STABLE_FRAMES   = 8;
+const STORAGE_KEY     = "communilens_samples";   // shared with CommuniLens so training carries over
+const PAUSE_MS        = 1600;                     // silence after signing that counts as end-of-turn (Gemini/compose mode only)
+
+/* ============================================================
+   INSTANT DEMO MODE
+   One recognized keyword immediately speaks a full, pre-set
+   sentence — no gloss accumulation, no Gemini round-trip. Built
+   for the café script so it's fast and can't stall on stage.
+   These ship as defaults (work out-of-the-box on the phone) and
+   are editable in the Demo panel + travel via Export/Import.
+   ============================================================ */
+const INSTANT_MODE_DEFAULT = true;
+const PHRASES_KEY = "relay_phrases";
+const DEFAULT_PHRASES = {
+  "hello":     "Hello!",
+  "coffee":    "I'd like a warm oat milk coffee, please.",
+  "milk":      "I'd like a warm oat milk coffee, please.",
+  "card":      "Card, please.",
+  "thank you": "Thank you!",
+};
+const PHRASE_DEDUPE_MS = 4000;   // coffee & milk map to the same line — don't speak it twice in one turn
+
+/* Distinct haptic patterns (SPEC §4 — must be recognizably different) */
+const HAPTIC = {
+  phrase:    40,             // per-phrase confirmation: short single
+  endOfTurn: [0,55,45,55],   // end-of-turn: distinct double
+  listening: [0,130],        // listening-mode entered: long single
+};
+
+/* Exact copy per SPEC §3 */
+const STATES = {
+  1:{ tone:"green", title:"TRANSLATION ACTIVE", sub:"Camera armed · auto-detect on",
+      announce:"Setup. Camera armed, auto-detecting your signing." },
+  2:{ tone:"green", title:"SPEAKING AUDIO: LIVE", sub:"Signing recognized",
+      announce:"Speaking your signed message aloud." },
+  3:{ tone:"blue",  title:"LISTEN & REPLY", sub:"Hearing user: please speak now",
+      announce:"Handing off. Waiting for the hearing person to speak." },
+  4:{ tone:"blue",  title:"LISTENING: LIVE", sub:"Captioning speech",
+      announce:"Listening. Captioning the hearing person's reply." },
+};
+
+const A11Y_NOTES = {
+  1: ()=>[
+    ["eye","High-contrast framing brackets guide camera positioning"],
+    ["ear","Status text mirrored to a screen-reader live region"],
+  ],
+  2: (done)=> done ? [
+    ["check","Distinct second pulse marks end-of-turn, separate from per-phrase pulse"],
+    ["eye","Reply button glows to invite the hand-off tap"],
+  ] : [
+    ["vibrate","Haptic pulse confirms each translated phrase"],
+    ["ear","Live captions mirrored for screen-reader narration"],
+  ],
+  3: ()=>[
+    ["volume2","Spoken cue, not just visual: says “Waiting for your response” aloud"],
+    ["vibrate","Haptic alert signals the mic is now listening"],
+  ],
+  4: ()=>[
+    ["eye","85%+ opacity caption card keeps text legible over any feed"],
+    ["rotateccw","Conversation loops back to Setup, not a dead end"],
+  ],
+};
+
+/* ============================================================
+   Inline lucide-style icons (the mockup used lucide-react)
+   ============================================================ */
+const ICONS = {
+  mic:'<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>',
+  hand:'<path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>',
+  vibrate:'<path d="m2 8 2 2-2 2 2 2-2 2"/><path d="m22 8-2 2 2 2-2 2 2 2"/><rect width="8" height="14" x="8" y="5" rx="1"/>',
+  arrowlr:'<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
+  check:'<polyline points="20 6 9 17 4 12"/>',
+  ear:'<path d="M6 8.5a6.5 6.5 0 1 1 13 0c0 6-6 6-6 10a3.5 3.5 0 1 1-7 0"/><path d="M15 8.5a2.5 2.5 0 0 0-5 0v1a2 2 0 1 1 0 4"/>',
+  eye:'<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+  rotateccw:'<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  volume2:'<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+};
+function svgIcon(name,size=16){
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]||""}</svg>`;
+}
+// hydrate any element with data-icon
+document.querySelectorAll("[data-icon]").forEach(el=>{
+  const c = el.getAttribute("data-color"); if(c) el.style.color = c;
+  el.innerHTML = svgIcon(el.getAttribute("data-icon"), +(el.getAttribute("data-size")||16));
+});
+
+/* ============================================================
+   DOM
+   ============================================================ */
+const $=id=>document.getElementById(id);
+const video=$("video"), skel=$("skeleton"), sctx=skel.getContext("2d");
+const stateDot=$("stateDot"), stateTitle=$("stateTitle"), stateSub=$("stateSub");
+const topWave=$("topWave"), center=$("center"), capwrap=$("capwrap"), capHint=$("capHint"),
+      caption=$("caption"), capMeta=$("capMeta"), deck=$("deck"), brackets=$("brackets");
+const cover=$("cover"), coverTitle=$("coverTitle"), coverBody=$("coverBody"), spinner=$("spinner");
+const notes=$("notes"), simToggle=$("simToggle"), simLabel=$("simLabel");
+const srA=$("srAssertive"), srP=$("srPolite");
+const modelState=$("modelState"), geminiState=$("geminiState"), signCount=$("signCount");
+const wordInput=$("wordInput"), seedChips=$("seedChips"), recordBtn=$("recordBtn"),
+      signList=$("signList"), clearAllBtn=$("clearAllBtn"), threshold=$("threshold"),
+      threshVal=$("threshVal"), switchCamBtn=$("switchCamBtn"), replaySimBtn=$("replaySimBtn"),
+      exportBtn=$("exportBtn"), importBtn=$("importBtn"), importFile=$("importFile"),
+      transferBox=$("transferBox"), transferMsg=$("transferMsg"),
+      modeInstantBtn=$("modeInstantBtn"), modeComposeBtn=$("modeComposeBtn"),
+      phraseField=$("phraseField"), phraseList=$("phraseList"),
+      phraseKey=$("phraseKey"), phraseText=$("phraseText"), phraseSaveBtn=$("phraseSaveBtn");
+const stepBtns=[...document.querySelectorAll(".stepper button")];
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let handLandmarker=null, stream=null, facingMode="user", lastTs=0, rafId=0;
+let samples={}, matchThreshold=MATCH_THRESHOLD;
+let state=1, turnDone=false;
+let gloss=[], lastLandmarks=null;
+let recent=[], lastCommitted=null, misses=0;
+let lastSignTime=0, turnStarted=false, composing=false;
+let audioCtx=null, analyser=null, micStream=null, audioRaf=0;
+let phrases={...DEFAULT_PHRASES}, instantMode=INSTANT_MODE_DEFAULT;
+let lastSpoken="", lastSpokenTime=0;   // dedupe repeated keyword within one turn
+
+/* ============================================================
+   PERSISTENCE (shared key with CommuniLens)
+   ============================================================ */
+function loadSamples(){ try{ const r=localStorage.getItem(STORAGE_KEY); if(r){const p=JSON.parse(r); if(p&&typeof p==="object") samples=p;} }catch(e){ console.warn("load samples:",e); samples={}; } }
+function saveSamples(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(samples)); }catch(e){ console.warn("save samples:",e); } }
+function loadPhrases(){ try{ const r=localStorage.getItem(PHRASES_KEY); if(r){const p=JSON.parse(r); if(p&&typeof p==="object") phrases={...DEFAULT_PHRASES,...p};} }catch(e){ console.warn("load phrases:",e); } }
+function savePhrases(){ try{ localStorage.setItem(PHRASES_KEY, JSON.stringify(phrases)); }catch(e){ console.warn("save phrases:",e); } }
+
+/* ============================================================
+   FEATURES + 1-NN (from CommuniLens engine)
+   ============================================================ */
+function featurize(lm){
+  const wx=lm[0].x, wy=lm[0].y, dx=lm[9].x-wx, dy=lm[9].y-wy;
+  let s=Math.hypot(dx,dy); if(s<1e-6)s=1e-6;
+  const v=new Array(42);
+  for(let i=0;i<21;i++){ v[i*2]=(lm[i].x-wx)/s; v[i*2+1]=(lm[i].y-wy)/s; }
+  return v;
+}
+function classify(f){
+  let bl=null, bd=Infinity;
+  for(const label in samples) for(const s of samples[label]){
+    let d=0; for(let i=0;i<42;i++){ const df=f[i]-s[i]; d+=df*df; }
+    d=Math.sqrt(d); if(d<bd){ bd=d; bl=label; }
+  }
+  return { label:bl, dist:bd };
+}
+
+/* ============================================================
+   STABILITY FILTER + COMMIT  →  per-phrase haptic
+   ============================================================ */
+function feedStability(label){
+  if(label){
+    misses=0; recent.push(label); if(recent.length>STABLE_FRAMES) recent.shift();
+    if(recent.length===STABLE_FRAMES && recent.every(l=>l===label) && label!==lastCommitted){
+      commitSign(label); lastCommitted=label;
+    }
+  }else{
+    recent.length=0; if(++misses>=STABLE_FRAMES) lastCommitted=null;
+  }
+}
+function commitSign(word){
+  lastSignTime=performance.now();
+  if(!turnStarted){ turnStarted=true; }
+  haptic(HAPTIC.phrase);
+  if(state===1) setState(2);            // first sign of a turn → Signing state
+
+  if(instantMode){
+    speakInstant(word);                 // keyword → full canned sentence, immediately
+    return;
+  }
+  // compose mode (Gemini): accumulate keywords into a gloss, speak at end-of-turn
+  gloss.push(word);
+  if(state===2){ renderState(); }
+  announce(`Recognized: ${word}`, false);
+}
+
+/* Instant demo: one keyword speaks its whole pre-set sentence right away. */
+function speakInstant(word){
+  const sentence = phrases[word];
+  if(!sentence){ announce(`Recognized: ${word} (no phrase set)`, false); return; }
+  const now=performance.now();
+  // coffee & milk share a line — don't repeat the same sentence within one turn
+  if(sentence===lastSpoken && (now-lastSpokenTime)<PHRASE_DEDUPE_MS) return;
+  lastSpoken=sentence; lastSpokenTime=now;
+  turnDone=true;
+  haptic(HAPTIC.endOfTurn);
+  caption.textContent=`"${sentence}"`; caption.style.color="var(--ink)"; caption.style.opacity="1";
+  stateSub.textContent="Spoken aloud";
+  setWaveActive(topWave,true);
+  announce(`Speaking: ${sentence}`, true);
+  speak(sentence, { onstart:()=>setWaveActive(topWave,true), onend:()=>setWaveActive(topWave,false) });
+  renderState();
+}
+
+/* End-of-turn: a pause after ≥1 recognized sign (compose/Gemini mode only). */
+function checkEndOfTurn(now){
+  if(!instantMode && state===2 && turnStarted && !turnDone && gloss.length>0 && !composing){
+    if(now - lastSignTime > PAUSE_MS){ endOfTurn(); }
+  }
+}
+
+/* ============================================================
+   CAMERA
+   ============================================================ */
+async function startCamera(){
+  if(stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+  stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode }, audio:false });
+  video.srcObject = stream;
+  await video.play().catch(()=>{});
+  const mirror = (facingMode==="user");
+  video.classList.toggle("mirrored", mirror);
+  skel.classList.toggle("mirrored", mirror);
+  await new Promise(res=>{ if(video.readyState>=1 && video.videoWidth) return res(); video.onloadedmetadata=()=>res(); });
+  skel.width = video.videoWidth||640; skel.height = video.videoHeight||480;
+}
+
+/* ============================================================
+   MEDIAPIPE
+   ============================================================ */
+async function initHands(){
+  const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+  const opts={ baseOptions:{ modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate:"GPU" }, numHands:1, runningMode:"VIDEO" };
+  try{ handLandmarker = await HandLandmarker.createFromOptions(vision, opts); }
+  catch(e){ console.warn("GPU delegate failed, retry CPU:",e); opts.baseOptions.delegate="CPU"; handLandmarker = await HandLandmarker.createFromOptions(vision, opts); }
+}
+
+const HAND_CONNECTIONS=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+
+function loop(){
+  const now=performance.now();
+  if(handLandmarker && video.readyState>=2 && video.videoWidth){
+    let ts=now; if(ts<=lastTs) ts=lastTs+1; lastTs=ts;
+    let res=null; try{ res=handLandmarker.detectForVideo(video, ts); }catch(e){}
+    detect(res, now);
+  }
+  checkEndOfTurn(now);
+  rafId=requestAnimationFrame(loop);
+}
+
+function detect(res, now){
+  sctx.clearRect(0,0,skel.width,skel.height);
+  const hands = (res&&res.landmarks)?res.landmarks:[];
+  const signSide = (state===1 || state===2);
+  if(hands.length){
+    const lm=hands[0]; lastLandmarks=lm;
+    if(signSide) drawHand(lm);
+    if(signSide && Object.keys(samples).length){
+      const {label,dist}=classify(featurize(lm));
+      if(label!==null && dist<=matchThreshold) feedStability(label);
+      else feedStability(null);
+    }
+  }else{
+    lastLandmarks=null;
+    if(signSide) feedStability(null);
+  }
+  // live preview of the running gloss on the Setup/Signing caption
+  if(state===1 && gloss.length){ caption.textContent = `"${gloss.join(" ")}…"`; caption.style.color="var(--ink-muted)"; }
+}
+
+function drawHand(lm){
+  const W=skel.width,H=skel.height;
+  sctx.lineWidth=Math.max(2,W/240); sctx.strokeStyle="rgba(46,230,166,0.55)";
+  sctx.beginPath();
+  for(const [a,b] of HAND_CONNECTIONS){ sctx.moveTo(lm[a].x*W,lm[a].y*H); sctx.lineTo(lm[b].x*W,lm[b].y*H); }
+  sctx.stroke();
+  const r=Math.max(2,W/220);
+  for(let i=0;i<lm.length;i++){ sctx.beginPath(); sctx.arc(lm[i].x*W,lm[i].y*H,r,0,Math.PI*2); sctx.fillStyle=(i===0||i===9)?"rgba(86,200,255,0.9)":"rgba(244,247,249,0.75)"; sctx.fill(); }
+}
+
+/* ============================================================
+   HAPTICS
+   ============================================================ */
+function haptic(pattern){ try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){} }
+
+/* ============================================================
+   LIVE REGIONS (SPEC §4)
+   assertive = state alerts (interrupt) · polite = streaming captions
+   ============================================================ */
+function announce(text, assertive=true){ const el=assertive?srA:srP; el.textContent=""; requestAnimationFrame(()=>{ el.textContent=text; }); }
+
+/* ============================================================
+   WAVEFORM
+   ============================================================ */
+function buildWave(el, color){
+  el.style.color=color; el.innerHTML="";
+  const hs=[6,14,22,12,18,9,16,8];
+  hs.forEach((h,i)=>{ const b=document.createElement("i"); b.style.height=(h*0.4)+"px"; b.style.animationDelay=(i*90)+"ms"; el.appendChild(b); });
+}
+function setWaveActive(el,on){ el.classList.toggle("active",on); }
+
+/* Real audio-reactive bars while listening (SPEC §2: only sensor-driven motion) */
+async function startMicAnalyser(){
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const src=audioCtx.createMediaStreamSource(micStream);
+    analyser=audioCtx.createAnalyser(); analyser.fftSize=64; src.connect(analyser);
+    const data=new Uint8Array(analyser.frequencyBinCount);
+    const bars=[...topWave.querySelectorAll("i")];
+    const tick=()=>{
+      analyser.getByteFrequencyData(data);
+      bars.forEach((b,i)=>{ const v=data[i*2]||0; b.style.height=Math.max(4, (v/255)*22)+"px"; });
+      audioRaf=requestAnimationFrame(tick);
+    };
+    tick();
+  }catch(e){ console.warn("mic analyser unavailable, using CSS wave:",e); setWaveActive(topWave,true); }
+}
+function stopMicAnalyser(){
+  cancelAnimationFrame(audioRaf);
+  if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
+  if(audioCtx){ audioCtx.close().catch(()=>{}); audioCtx=null; }
+  analyser=null;
+}
+
+/* ============================================================
+   GEMINI + TTS
+   ============================================================ */
+async function composeSentence(words){
+  const prompt=`You convert sign-language glosses into natural spoken English for a Deaf person talking with a hearing person face-to-face. The signs recognized, in order, were: ${words.join(", ")}. Turn them into ONE short, natural, friendly spoken sentence. Reply with only the sentence — no quotes, no extra text.`;
+  if(!GEMINI_API_KEY){ return null; }
+  try{
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
+      { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ contents:[{parts:[{text:prompt}]}] }) });
+    if(!r.ok){ console.warn("Gemini HTTP",r.status, await r.text().catch(()=>"")); return null; }
+    const d=await r.json();
+    const t=d?.candidates?.[0]?.content?.parts?.[0]?.text;
+    return t ? t.trim().replace(/^["'“”]+|["'“”]+$/g,"").trim() : null;
+  }catch(e){ console.warn("Gemini failed:",e); return null; }
+}
+function fallbackSentence(words){ const s=words.join(" ").trim(); return s? s[0].toUpperCase()+s.slice(1)+"." : ""; }
+
+function speak(text, {onstart,onend}={}){
+  try{
+    if(!("speechSynthesis" in window) || !text){ onstart&&onstart(); onend&&onend(); return; }
+    speechSynthesis.cancel();
+    const u=new SpeechSynthesisUtterance(text); u.lang="en-US";
+    u.onstart=()=>onstart&&onstart(); u.onend=()=>onend&&onend();
+    speechSynthesis.speak(u);
+  }catch(e){ console.warn("TTS:",e); onend&&onend(); }
+}
+
+/* ============================================================
+   TURN LOGIC
+   ============================================================ */
+async function endOfTurn(){
+  if(composing) return; composing=true; turnDone=true;
+  haptic(HAPTIC.endOfTurn);                       // distinct second pulse
+  const words=gloss.slice();
+  renderState();                                  // shows "Turn complete" + glowing reply
+  announce("Turn complete. Speaking your message aloud.");
+  let sentence = await composeSentence(words);
+  if(!sentence) sentence = fallbackSentence(words) || "Hello.";
+  caption.textContent = `"${sentence}"`; caption.style.color="var(--ink)";
+  setWaveActive(topWave,true);
+  speak(sentence, {
+    onstart:()=>setWaveActive(topWave,true),
+    onend:()=>setWaveActive(topWave,false),
+  });
+  composing=false;
+}
+
+/* ============================================================
+   STATE MACHINE
+   ============================================================ */
+function setState(n){
+  state=n;
+  // reset per-turn flags when returning to Setup
+  if(n===1){ gloss=[]; turnDone=false; turnStarted=false; lastCommitted=null; recent.length=0; lastSpoken=""; lastSpokenTime=0; }
+  stepBtns.forEach(b=>b.setAttribute("aria-current", (+b.dataset.state===n)?"true":"false"));
+  renderState();
+  const s=STATES[n]; announce(s.announce, true);
+  screenFocus();
+  // side effects
+  stopMicAnalyser();
+  if(n!==4){ stopRecognition(); setWaveActive(topWave,false); }  // stop listening when we leave State 4
+  if(n===3) enterHandoff();
+  if(n===4) enterListening();
+}
+
+function screenFocus(){ try{ $("screen").focus({preventScroll:true}); }catch(e){} }
+
+function renderState(){
+  const s=STATES[state];
+  const tone = s.tone==="green" ? "var(--green)" : "var(--blue)";
+  stateDot.style.background=tone; stateDot.style.boxShadow=`0 0 8px ${tone}`;
+  stateTitle.innerHTML = state===3 ? "LISTEN &amp; REPLY" : s.title;
+  // topWave present on Signing (2) and Listening (4)
+  topWave.hidden = !(state===2 || state===4);
+  if(!topWave.hidden){ buildWave(topWave, tone); }
+  // sub text
+  stateSub.textContent = (state===2) ? (turnDone?"Turn complete":"Signing recognized") : s.sub;
+  // simtoggle only on Signing
+  simToggle.hidden = (state!==2);
+  simLabel.textContent = turnDone ? "Simulate: resume signing" : "Simulate: finish signing";
+  // regions default visible
+  center.hidden=true; center.innerHTML=""; capwrap.hidden=false; capHint.hidden=true; capMeta.innerHTML="";
+  deck.innerHTML="";
+
+  if(state===1){
+    capHint.hidden=false; capHint.textContent="Recognizing sign…";
+    if(!gloss.length){ caption.textContent='"Hi, nice to meet…"'; caption.style.color="var(--ink-muted)"; caption.style.opacity=".85"; }
+    deck.appendChild(deckButton({label:"TAP TO START REPLY", icon:"hand", tone:"neutral", onClick:()=>setState(3)}));
+  }
+  else if(state===2){
+    caption.style.opacity="1";
+    if(!composing && !turnDone && gloss.length){ caption.textContent=`"${gloss.join(" ")}"`; caption.style.color="var(--ink)"; }
+    else if(!gloss.length && !turnDone){ caption.textContent='"…"'; caption.style.color="var(--ink-muted)"; }
+    // haptic/meta line
+    capMeta.innerHTML=`<div style="margin-top:8px;display:flex;align-items:center;gap:6px;padding-left:2px">
+      <span style="color:var(--green);display:inline-flex">${svgIcon("vibrate",13)}</span>
+      <span style="font-family:var(--cap);font-size:11px;color:var(--green)">${turnDone?"Second pulse: pause detected":"Haptic pulse confirmed"}</span></div>`;
+    if(turnDone){
+      const tag=document.createElement("div");
+      tag.className="tag"; tag.style.marginTop="10px"; tag.style.background="rgba(46,230,166,0.14)"; tag.style.border="1px solid var(--green)"; tag.style.color="var(--green)";
+      tag.innerHTML=`${svgIcon("check",13)} Turn complete`;
+      capMeta.appendChild(tag);
+    }
+    deck.appendChild(deckButton({label:"TAP TO START REPLY", icon:"hand", tone:"neutral", glow:turnDone, onClick:()=>setState(3)}));
+  }
+  else if(state===3){
+    capwrap.hidden=true; center.hidden=false;
+    center.innerHTML=`
+      <div class="mic-orb" style="color:var(--blue)">${svgIcon("mic",34)}</div>
+      <div class="pill" style="color:var(--blue)">${svgIcon("arrowlr",13)}<span>Screen flipped to hearing user</span></div>
+      <div class="pill" style="background:rgba(86,200,255,0.1);border:1px solid rgba(86,200,255,0.35);color:var(--blue)">${svgIcon("volume2",13)}<span>Speaking aloud: “Waiting for your response”</span></div>`;
+    const note=document.createElement("div");
+    note.style.cssText="position:absolute;left:0;right:0;bottom:0;padding:14px 18px 20px;text-align:center;background:linear-gradient(0deg,rgba(5,7,10,.92),transparent)";
+    note.innerHTML=`<div style="font-family:var(--cap);font-size:11px;color:var(--ink-muted)">Auto-listening — no tap needed</div>`;
+    deck.appendChild(note);
+  }
+  else if(state===4){
+    caption.style.opacity="1"; caption.style.color="#93DBFF";
+    if(!caption.dataset.live){ caption.textContent='"…"'; }
+    deck.appendChild(deckButton({label:"I AM DONE", icon:"check", tone:"blue", onClick:()=>setState(1)}));
+    const loop=document.createElement("div"); loop.className="loopnote";
+    loop.innerHTML=`<span style="color:var(--ink-muted);display:inline-flex">${svgIcon("rotateccw",11)}</span><span>Ends turn — returns to Setup for the next one</span>`;
+    deck.appendChild(loop);
+  }
+  renderNotes();
+}
+
+function deckButton({label,icon,tone,glow,onClick}){
+  const b=document.createElement("button");
+  b.className="btn"+(tone==="green"?" green":tone==="blue"?" blue":"")+(glow?" glow":"");
+  b.innerHTML=`${icon?svgIcon(icon,16):""}<span>${label}</span>`;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function renderNotes(){
+  const list = (state===2) ? A11Y_NOTES[2](turnDone) : A11Y_NOTES[state]();
+  notes.innerHTML="";
+  list.forEach(([ic,txt])=>{
+    const n=document.createElement("div"); n.className="note";
+    n.innerHTML=`${svgIcon(ic,15)}<span>${txt}</span>`;
+    notes.appendChild(n);
+  });
+}
+
+/* State 3 — hand-off: speak cue (always, SPEC §4), haptic, start listening */
+function enterHandoff(){
+  haptic(HAPTIC.listening);
+  caption.dataset.live="";
+  speak("Waiting for your response.", { onend:()=>{ if(state===3) setState(4); } });
+  // safety: advance even if TTS is silent/blocked
+  setTimeout(()=>{ if(state===3) setState(4); }, 2600);
+}
+
+/* State 4 — listening: real speech-to-text + audio-reactive waveform */
+function enterListening(){
+  buildWave(topWave, "var(--blue)");
+  startMicAnalyser();
+  startRecognition();
+}
+
+/* ============================================================
+   SPEECH RECOGNITION (reverse direction)
+   ============================================================ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition=null, listening=false;
+function setupRecognition(){
+  if(!SR) return;
+  recognition=new SR(); recognition.continuous=true; recognition.interimResults=true; recognition.lang="en-US";
+  recognition.onresult=(ev)=>{
+    let interim="", final="";
+    for(let i=ev.resultIndex;i<ev.results.length;i++){ const t=ev.results[i][0].transcript; if(ev.results[i].isFinal) final+=t; else interim+=t; }
+    const shown=(final+" "+interim).trim();
+    if(shown){ caption.dataset.live="1"; caption.textContent=`"${shown}"`; caption.style.color="#93DBFF"; announce(shown,false); }
+  };
+  recognition.onerror=(e)=>console.warn("SpeechRecognition:",e.error);
+  recognition.onend=()=>{ if(listening){ try{ recognition.start(); }catch(_){}} };
+}
+function startRecognition(){ if(!recognition){ caption.textContent='"(Speech-to-text needs Chrome — unavailable here)"'; caption.style.color="var(--ink-muted)"; return; } listening=true; try{ recognition.start(); }catch(_){} }
+function stopRecognition(){ listening=false; if(recognition){ try{ recognition.stop(); }catch(_){}} }
+
+/* ============================================================
+   TRAINING (Demo panel)
+   ============================================================ */
+function renderSeedChips(){ seedChips.innerHTML=""; SIGNS.forEach(w=>{ const b=document.createElement("button"); b.className="chip"; b.type="button"; b.textContent=w; b.onclick=()=>{ wordInput.value=w; wordInput.focus(); }; seedChips.appendChild(b); }); }
+function renderSignList(){
+  const labels=Object.keys(samples); signCount.textContent=labels.length;
+  if(!labels.length){ signList.innerHTML='<span class="empty">No signs trained yet — signs carry over from CommuniLens if you trained there.</span>'; return; }
+  signList.innerHTML="";
+  labels.forEach(l=>{ const it=document.createElement("div"); it.className="item"; it.innerHTML=`<span><b>${escapeHtml(l)}</b> · ×${samples[l].length}</span>`; const d=document.createElement("button"); d.textContent="Remove"; d.onclick=()=>{ delete samples[l]; saveSamples(); renderSignList(); }; it.appendChild(d); signList.appendChild(it); });
+}
+function recordSample(){
+  const w=wordInput.value.trim().toLowerCase();
+  if(!w){ wordInput.focus(); return; }
+  if(!lastLandmarks){ announce("No hand detected — hold your shape.", true); return; }
+  if(!samples[w]) samples[w]=[]; samples[w].push(featurize(lastLandmarks)); saveSamples(); renderSignList();
+  announce(`Saved sample for ${w}. Now ${samples[w].length} total.`, false);
+}
+function escapeHtml(s){ return s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+/* ============================================================
+   INSTANT PHRASES + MODE (Demo panel)
+   ============================================================ */
+function renderMode(){
+  modeInstantBtn.style.background = instantMode ? "var(--green)" : "var(--void)";
+  modeInstantBtn.style.color      = instantMode ? "#04140F" : "var(--ink)";
+  modeComposeBtn.style.background = !instantMode ? "var(--blue)" : "var(--void)";
+  modeComposeBtn.style.color      = !instantMode ? "#04140F" : "var(--ink)";
+  phraseField.style.display = instantMode ? "" : "none";
+}
+function setMode(instant){ instantMode=instant; renderMode(); announce(instant?"Instant phrase mode.":"Compose mode with Gemini.", true); }
+
+function renderPhraseList(){
+  const keys=Object.keys(phrases);
+  phraseList.innerHTML="";
+  if(!keys.length){ phraseList.innerHTML='<span class="empty">No phrases yet.</span>'; return; }
+  keys.forEach(k=>{
+    const it=document.createElement("div"); it.className="item";
+    it.innerHTML=`<span><b>${escapeHtml(k)}</b> → ${escapeHtml(phrases[k])}</span>`;
+    const d=document.createElement("button"); d.textContent="Remove";
+    d.onclick=()=>{ delete phrases[k]; savePhrases(); renderPhraseList(); };
+    it.appendChild(d); phraseList.appendChild(it);
+  });
+}
+function savePhrase(){
+  const k=phraseKey.value.trim().toLowerCase(), t=phraseText.value.trim();
+  if(!k||!t){ phraseKey.focus(); return; }
+  phrases[k]=t; savePhrases(); renderPhraseList();
+  phraseKey.value=""; phraseText.value=""; phraseKey.focus();
+}
+
+/* ============================================================
+   EXPORT / IMPORT trained signs (move between laptop ↔ phone)
+   localStorage is per-device, so this is how signs travel.
+   ============================================================ */
+function setTransferMsg(msg, ok=true){ transferMsg.innerHTML = msg ? `<b style="color:${ok?'var(--green)':'var(--blue)'}">${escapeHtml(msg)}</b>` : ""; }
+
+function exportSigns(){
+  const labels=Object.keys(samples);
+  if(!labels.length){ setTransferMsg("Nothing to export — train a sign first.", false); return; }
+  // round floats to 4dp to keep the code compact
+  const compact={}; for(const l of labels) compact[l]=samples[l].map(v=>v.map(n=>Math.round(n*1e4)/1e4));
+  const payload=JSON.stringify({ v:1, app:"relay-signs", samples:compact, phrases });
+  transferBox.value=payload;
+  // 1) copy to clipboard (best effort)
+  try{ navigator.clipboard?.writeText(payload); }catch(e){}
+  // 2) offer a file download
+  try{
+    const blob=new Blob([payload],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="relay-signs.json"; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(e){}
+  const total=labels.reduce((n,l)=>n+samples[l].length,0);
+  setTransferMsg(`Exported ${labels.length} sign(s), ${total} samples — copied, downloaded, and shown above. Paste this code on the other device.`);
+}
+
+function importFromText(text){
+  let data;
+  try{ data=JSON.parse(text.trim()); }
+  catch(e){ setTransferMsg("Couldn't read that — paste the exact exported code, or use a file.", false); return; }
+  const incoming = data && data.samples && typeof data.samples==="object" ? data.samples : (typeof data==="object"?data:null);
+  if(!incoming){ setTransferMsg("That doesn't look like exported signs.", false); return; }
+  // validate: each label -> array of 42-length numeric vectors
+  let added=0, merged=0;
+  for(const label in incoming){
+    const arr=incoming[label];
+    if(!Array.isArray(arr)) continue;
+    const good=arr.filter(v=>Array.isArray(v)&&v.length===42&&v.every(n=>typeof n==="number"&&isFinite(n)));
+    if(!good.length) continue;
+    if(!samples[label]){ samples[label]=[]; added++; } else merged++;
+    samples[label].push(...good);
+  }
+  // phrases travel too, if present
+  let phraseCount=0;
+  if(data.phrases && typeof data.phrases==="object"){
+    for(const k in data.phrases){ if(typeof data.phrases[k]==="string"){ phrases[k]=data.phrases[k]; phraseCount++; } }
+    if(phraseCount){ savePhrases(); renderPhraseList(); }
+  }
+  if(added+merged===0 && !phraseCount){ setTransferMsg("No valid signs found in that data.", false); return; }
+  saveSamples(); renderSignList();
+  setTransferMsg(`Imported ${added} new + ${merged} merged sign(s)${phraseCount?` and ${phraseCount} phrase(s)`:""}. Ready — hold a shape to test.`);
+}
+
+/* ============================================================
+   WIRE-UP
+   ============================================================ */
+stepBtns.forEach(b=> b.addEventListener("click", ()=> setState(+b.dataset.state)));
+simToggle.addEventListener("click", ()=>{
+  if(state!==2) return;
+  if(turnDone){ turnDone=false; composing=false; caption.textContent = gloss.length?`"${gloss.join(" ")}"`:'"…"'; caption.style.color=gloss.length?"var(--ink)":"var(--ink-muted)"; setWaveActive(topWave,false); renderState(); }
+  else{ if(!gloss.length) gloss=["hello","coffee","milk"]; lastSignTime=0; turnStarted=true; endOfTurn(); }
+});
+recordBtn.addEventListener("click", recordSample);
+wordInput.addEventListener("keydown", e=>{ if(e.key==="Enter") recordSample(); });
+clearAllBtn.addEventListener("click", ()=>{ if(Object.keys(samples).length && confirm("Delete ALL trained signs?")){ samples={}; saveSamples(); renderSignList(); } });
+threshold.addEventListener("input", ()=>{ matchThreshold=parseFloat(threshold.value); threshVal.textContent=matchThreshold.toFixed(2); });
+switchCamBtn.addEventListener("click", async ()=>{ facingMode=(facingMode==="user")?"environment":"user"; try{ await startCamera(); }catch(e){ console.warn(e); } });
+exportBtn.addEventListener("click", exportSigns);
+importBtn.addEventListener("click", ()=>{
+  const txt=transferBox.value.trim();
+  if(txt){ importFromText(txt); } else { importFile.click(); }   // paste-code path, or fall back to file picker
+});
+importFile.addEventListener("change", ()=>{
+  const f=importFile.files&&importFile.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>importFromText(String(r.result||""));
+  r.onerror=()=>setTransferMsg("Couldn't read that file.", false);
+  r.readAsText(f);
+  importFile.value="";
+});
+modeInstantBtn.addEventListener("click", ()=>setMode(true));
+modeComposeBtn.addEventListener("click", ()=>setMode(false));
+phraseSaveBtn.addEventListener("click", savePhrase);
+phraseText.addEventListener("keydown", e=>{ if(e.key==="Enter") savePhrase(); });
+phraseKey.addEventListener("keydown", e=>{ if(e.key==="Enter") phraseText.focus(); });
+replaySimBtn.addEventListener("click", ()=>{ // scripted end-to-end demo (works in both modes)
+  setState(1); turnStarted=true;
+  if(instantMode){
+    setState(2);
+    setTimeout(()=>speakInstant("coffee"), 700);      // simulate one recognized keyword → instant sentence
+    setTimeout(()=>{ if(state===2) setState(3); }, 3600);
+  }else{
+    gloss=["hello","coffee","milk"];
+    setState(2);
+    setTimeout(()=>{ lastSignTime=0; endOfTurn(); }, 900);
+    setTimeout(()=>{ if(state===2) setState(3); }, 3600);
+  }
+});
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+async function main(){
+  renderSeedChips(); loadSamples(); renderSignList();
+  loadPhrases(); renderPhraseList(); renderMode();
+  setupRecognition();
+  geminiState.textContent = GEMINI_API_KEY ? "key set" : "fallback (no key)";
+  if(!SR){ /* listening still works via TTS cue; captions show a note */ }
+  buildWave(topWave, "var(--green)");
+  renderState();
+
+  try{ await initHands(); modelState.textContent="ready"; }
+  catch(e){ console.error(e); modelState.textContent="failed"; coverTitle.textContent="Couldn’t load the hand model"; coverBody.textContent="Check your connection and reload."; spinner.style.display="none"; return; }
+
+  try{ await startCamera(); }
+  catch(e){ console.error("camera:",e); modelState.textContent="ready (no camera)"; coverTitle.textContent="Camera unavailable"; coverBody.textContent="Allow camera access and reload. Mobile needs HTTPS + a tap."; spinner.style.display="none"; return; }
+
+  cover.classList.remove("show");
+  rafId=requestAnimationFrame(loop);
+}
+main();
+</script>
+</body>
+</html>
