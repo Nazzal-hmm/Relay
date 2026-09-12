@@ -7,7 +7,6 @@ A real-time, two-way translation app between a Deaf/Hard-of-Hearing (DHH) signer
 
 Everything runs client-side in a single `index.html` — no build step, no server.
 
-**Live demo:** https://ireland-hackathon26dub-4302.web.app
 *(Best on desktop Chrome or Android Chrome. On iOS Safari the camera + speaking work, but the "Listening" speech-to-text captions are unavailable.)*
 
 ---
